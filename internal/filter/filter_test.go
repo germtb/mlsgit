@@ -49,6 +49,9 @@ func setupFilterTest(t *testing.T) (storage.MLSGitPaths, *mls.MLSGitGroup, *mls.
 	copy(combined[32:], groupBytes)
 	storage.WriteLocalMLSState(paths, combined)
 
+	// Save init_priv.bin for DH operations
+	os.WriteFile(paths.LocalDir()+"/init_priv.bin", mlsKeys.InitPriv, 0o600)
+
 	// Save config
 	cfg := config.DefaultConfig()
 	os.WriteFile(paths.ConfigTOML(), []byte(cfg.ToTOML()), 0o644)

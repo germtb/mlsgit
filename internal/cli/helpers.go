@@ -67,7 +67,14 @@ func loadMLSGitGroup(paths storage.MLSGitPaths) (*mls.MLSGitGroup, error) {
 	}
 	sigPriv := data[:32]
 	groupBytes := data[32:]
-	group, err := mls.FromBytes(groupBytes, ed25519.NewKeyFromSeed(sigPriv))
+
+	// Load X25519 init private key for DH operations during sync
+	initPriv, err := os.ReadFile(paths.LocalDir() + "/init_priv.bin")
+	if err != nil {
+		return nil, fmt.Errorf("read init_priv: %w", err)
+	}
+
+	group, err := mls.FromBytes(groupBytes, ed25519.NewKeyFromSeed(sigPriv), initPriv)
 	if err != nil {
 		return nil, err
 	}

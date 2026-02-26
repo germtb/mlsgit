@@ -2,8 +2,13 @@ package mls
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
+	"io"
 	"testing"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 func TestCreateGroup(t *testing.T) {
@@ -39,10 +44,8 @@ func TestExportEpochSecret(t *testing.T) {
 		t.Errorf("secret length = %d, want 32", len(secret1))
 	}
 	// Same epoch should give same secret
-	for i := range secret1 {
-		if secret1[i] != secret2[i] {
-			t.Fatal("same epoch should produce same secret")
-		}
+	if !bytes.Equal(secret1, secret2) {
+		t.Fatal("same epoch should produce same secret")
 	}
 }
 
@@ -55,7 +58,7 @@ func TestGroupSerializeDeserialize(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	g2, err := FromBytes(data, keys.SigPriv)
+	g2, err := FromBytes(data, keys.SigPriv, keys.InitPriv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,10 +105,8 @@ func TestAddMember(t *testing.T) {
 	// Both should derive same epoch secret
 	aliceSecret := g.ExportEpochSecret()
 	bobSecret := bobGroup.ExportEpochSecret()
-	for i := range aliceSecret {
-		if aliceSecret[i] != bobSecret[i] {
-			t.Fatal("epoch secrets should match after join")
-		}
+	if !bytes.Equal(aliceSecret, bobSecret) {
+		t.Fatal("epoch secrets should match after join")
 	}
 }
 
@@ -183,7 +184,7 @@ func TestSyncFromCommittedRatchet(t *testing.T) {
 
 	bobKeys, _ := GenerateMLSKeys()
 	kp := BuildKeyPackage([]byte("bob"), bobKeys)
-	commitBytes, welcomeBytes, err := alice.AddMember(kp)
+	_, welcomeBytes, err := alice.AddMember(kp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +203,7 @@ func TestSyncFromCommittedRatchet(t *testing.T) {
 
 	// Clone g1's state at epoch 0
 	g1Bytes, _ := g1.ToBytes()
-	g2, _ := FromBytes(g1Bytes, keys1.SigPriv)
+	g2, _ := FromBytes(g1Bytes, keys1.SigPriv, keys1.InitPriv)
 
 	// g1 adds a member -> advances to epoch 1
 	bobKeys2, _ := GenerateMLSKeys()
@@ -210,7 +211,6 @@ func TestSyncFromCommittedRatchet(t *testing.T) {
 	_, _, _ = g1.AddMember(kp2)
 
 	// g1 is now at epoch 1. Get committed bytes (no secret)
-	_ = commitBytes // unused from earlier
 	committedBytes, _ := g1.ToCommittedBytes()
 
 	// g2 is still at epoch 0. Sync from committed state.
@@ -238,14 +238,12 @@ func TestSyncFromCommittedRatchet(t *testing.T) {
 func TestSyncFromCommittedBackwardCompat(t *testing.T) {
 	// Test that old-format JSON (containing epoch_secret and own_leaf_index)
 	// is accepted by the new SyncFromCommitted.
-	// The old format is just a full groupState JSON; the new code deserializes
-	// into committedGroupState which ignores unknown fields.
 	keys, _ := GenerateMLSKeys()
 	g1, _ := Create([]byte("test-group"), []byte("alice"), keys)
 
 	// Clone at epoch 0
 	g1Bytes, _ := g1.ToBytes()
-	g2, _ := FromBytes(g1Bytes, keys.SigPriv)
+	g2, _ := FromBytes(g1Bytes, keys.SigPriv, keys.InitPriv)
 
 	// g1 adds a member
 	bobKeys, _ := GenerateMLSKeys()
@@ -263,20 +261,20 @@ func TestSyncFromCommittedBackwardCompat(t *testing.T) {
 	if g2.Epoch() != g1.Epoch() {
 		t.Errorf("epoch mismatch: g2=%d, g1=%d", g2.Epoch(), g1.Epoch())
 	}
-	// Epoch secrets should match because ratchet is deterministic
+	// Epoch secrets should match because ratchet is deterministic for adds
 	if !bytes.Equal(g1.ExportEpochSecret(), g2.ExportEpochSecret()) {
 		t.Error("epoch secrets should match with old format sync")
 	}
 }
 
 func TestApplyCommitRatchet(t *testing.T) {
-	// Test that ApplyCommit works with the new committed format
+	// Test that ApplyCommit works with the committed format
 	keys, _ := GenerateMLSKeys()
 	g1, _ := Create([]byte("test-group"), []byte("alice"), keys)
 
 	// Clone at epoch 0
 	g1Bytes, _ := g1.ToBytes()
-	g2, _ := FromBytes(g1Bytes, keys.SigPriv)
+	g2, _ := FromBytes(g1Bytes, keys.SigPriv, keys.InitPriv)
 
 	// g1 adds a member -> epoch 1
 	bobKeys, _ := GenerateMLSKeys()
@@ -312,15 +310,213 @@ func TestEpochSecretChangesAfterAdvance(t *testing.T) {
 	g.AddMember(kp)
 	secret1 := g.ExportEpochSecret()
 
-	// Secrets should differ across epochs
-	same := true
-	for i := range secret0 {
-		if secret0[i] != secret1[i] {
-			same = false
-			break
-		}
-	}
-	if same {
+	if bytes.Equal(secret0, secret1) {
 		t.Error("epoch secrets should differ after epoch advance")
+	}
+}
+
+// --- DH-based rekeying tests ---
+
+func TestRemovalForwardSecrecy(t *testing.T) {
+	// This is the critical test: a removed member MUST NOT be able to derive
+	// the new epoch secret by applying the old deterministic HKDF ratchet.
+	aliceKeys, _ := GenerateMLSKeys()
+	alice, _ := Create([]byte("test-group"), []byte("alice"), aliceKeys)
+
+	bobKeys, _ := GenerateMLSKeys()
+	kp := BuildKeyPackage([]byte("bob"), bobKeys)
+	_, welcomeBytes, _ := alice.AddMember(kp) // epoch 1
+
+	bob, _ := JoinFromWelcome(welcomeBytes, bobKeys)
+
+	// Capture Bob's state before removal
+	bobEpochSecret := make([]byte, len(bob.state.EpochSecret))
+	copy(bobEpochSecret, bob.state.EpochSecret)
+	bobEpoch := bob.state.Epoch
+
+	// Alice removes Bob
+	alice.RemoveMember(1) // epoch 2
+
+	// Bob tries the old deterministic ratchet: HKDF(oldSecret, epoch, info)
+	// This is what the old code would compute — and it MUST NOT work.
+	epochBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(epochBytes, bobEpoch)
+	r := hkdf.New(sha256.New, bobEpochSecret, epochBytes, []byte("mlsgit-epoch-advance"))
+	bobGuess := make([]byte, 32)
+	io.ReadFull(r, bobGuess)
+
+	// Export what Bob would get if his guess were correct
+	bobGuessedExport := exportSecret(bobGuess, []byte("mlsgit-epoch-secret"), nil, 32)
+
+	// Alice's actual epoch secret
+	aliceSecret := alice.ExportEpochSecret()
+
+	if bytes.Equal(aliceSecret, bobGuessedExport) {
+		t.Fatal("SECURITY FAILURE: removed member can derive the new epoch secret via deterministic ratchet")
+	}
+
+	// Also verify the raw epoch secrets differ
+	if bytes.Equal(bobGuess, alice.state.EpochSecret) {
+		t.Fatal("SECURITY FAILURE: deterministic ratchet produces the same raw epoch secret")
+	}
+}
+
+func TestSyncAfterRemoval(t *testing.T) {
+	// Test that remaining members can sync via DH after a removal.
+	aliceKeys, _ := GenerateMLSKeys()
+	alice, _ := Create([]byte("test-group"), []byte("alice"), aliceKeys)
+
+	bobKeys, _ := GenerateMLSKeys()
+	bkp := BuildKeyPackage([]byte("bob"), bobKeys)
+	_, _, _ = alice.AddMember(bkp) // epoch 1
+
+	charlieKeys, _ := GenerateMLSKeys()
+	ckp := BuildKeyPackage([]byte("charlie"), charlieKeys)
+	_, cwelcomeBytes, _ := alice.AddMember(ckp) // epoch 2
+
+	charlie, _ := JoinFromWelcome(cwelcomeBytes, charlieKeys)
+
+	// Alice removes Bob at epoch 3 (DH-based)
+	_, err := alice.RemoveMember(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alice.Epoch() != 3 {
+		t.Fatalf("alice epoch = %d, want 3", alice.Epoch())
+	}
+
+	// Charlie syncs from committed state
+	committedBytes, _ := alice.ToCommittedBytes()
+	updated := charlie.SyncFromCommitted(committedBytes)
+	if !updated {
+		t.Fatal("SyncFromCommitted should return true")
+	}
+	if charlie.Epoch() != 3 {
+		t.Errorf("charlie epoch = %d, want 3", charlie.Epoch())
+	}
+
+	// Alice and Charlie should have the same epoch secret
+	if !bytes.Equal(alice.ExportEpochSecret(), charlie.ExportEpochSecret()) {
+		t.Error("epoch secrets should match after DH-based sync")
+	}
+}
+
+func TestSyncMultipleRemovalsOffline(t *testing.T) {
+	// Test that a member offline during multiple removals can catch up.
+	aliceKeys, _ := GenerateMLSKeys()
+	alice, _ := Create([]byte("test-group"), []byte("alice"), aliceKeys)
+
+	bobKeys, _ := GenerateMLSKeys()
+	bkp := BuildKeyPackage([]byte("bob"), bobKeys)
+	alice.AddMember(bkp) // epoch 1
+
+	charlieKeys, _ := GenerateMLSKeys()
+	ckp := BuildKeyPackage([]byte("charlie"), charlieKeys)
+	alice.AddMember(ckp) // epoch 2
+
+	daveKeys, _ := GenerateMLSKeys()
+	dkp := BuildKeyPackage([]byte("dave"), daveKeys)
+	_, dwelcomeBytes, _ := alice.AddMember(dkp) // epoch 3
+
+	dave, _ := JoinFromWelcome(dwelcomeBytes, daveKeys)
+
+	// Dave goes offline. Alice removes Bob then Charlie.
+	alice.RemoveMember(1) // epoch 4 (DH)
+	alice.RemoveMember(2) // epoch 5 (DH)
+
+	// Dave comes back and syncs (skipping 2 DH-based transitions)
+	committedBytes, _ := alice.ToCommittedBytes()
+	updated := dave.SyncFromCommitted(committedBytes)
+	if !updated {
+		t.Fatal("SyncFromCommitted should return true")
+	}
+	if dave.Epoch() != 5 {
+		t.Errorf("dave epoch = %d, want 5", dave.Epoch())
+	}
+	if !bytes.Equal(alice.ExportEpochSecret(), dave.ExportEpochSecret()) {
+		t.Error("epoch secrets should match after multi-removal catch-up")
+	}
+}
+
+func TestApplyCommitAfterRemoval(t *testing.T) {
+	// Test ApplyCommit with DH-based removal
+	aliceKeys, _ := GenerateMLSKeys()
+	alice, _ := Create([]byte("test-group"), []byte("alice"), aliceKeys)
+
+	bobKeys, _ := GenerateMLSKeys()
+	bkp := BuildKeyPackage([]byte("bob"), bobKeys)
+	alice.AddMember(bkp) // epoch 1
+
+	charlieKeys, _ := GenerateMLSKeys()
+	ckp := BuildKeyPackage([]byte("charlie"), charlieKeys)
+	_, cwelcomeBytes, _ := alice.AddMember(ckp) // epoch 2
+
+	charlie, _ := JoinFromWelcome(cwelcomeBytes, charlieKeys)
+
+	// Alice removes Bob
+	commitBytes, _ := alice.RemoveMember(1) // epoch 3
+
+	// Charlie applies the commit
+	if err := charlie.ApplyCommit(commitBytes); err != nil {
+		t.Fatal(err)
+	}
+	if charlie.Epoch() != 3 {
+		t.Errorf("charlie epoch = %d, want 3", charlie.Epoch())
+	}
+	if !bytes.Equal(alice.ExportEpochSecret(), charlie.ExportEpochSecret()) {
+		t.Error("epoch secrets should match after ApplyCommit with DH removal")
+	}
+}
+
+func TestUpdateEncapsPropagateViaWelcome(t *testing.T) {
+	// Test that encaps from prior removals are included in Welcome messages.
+	aliceKeys, _ := GenerateMLSKeys()
+	alice, _ := Create([]byte("test-group"), []byte("alice"), aliceKeys)
+
+	bobKeys, _ := GenerateMLSKeys()
+	bkp := BuildKeyPackage([]byte("bob"), bobKeys)
+	alice.AddMember(bkp) // epoch 1
+
+	// Remove Bob (creates DH encap)
+	alice.RemoveMember(1) // epoch 2
+
+	// Add Charlie (Welcome should include the encap from the removal)
+	charlieKeys, _ := GenerateMLSKeys()
+	ckp := BuildKeyPackage([]byte("charlie"), charlieKeys)
+	_, welcomeBytes, _ := alice.AddMember(ckp) // epoch 3
+
+	// Parse Welcome and verify encaps are present
+	var w WelcomeData
+	json.Unmarshal(welcomeBytes, &w)
+	if len(w.UpdateEncaps) == 0 {
+		t.Error("Welcome should include UpdateEncaps from prior removal")
+	}
+
+	charlie, _ := JoinFromWelcome(welcomeBytes, charlieKeys)
+
+	// Verify Charlie got the encaps
+	if len(charlie.state.UpdateEncaps) == 0 {
+		t.Error("Charlie should have encaps from Welcome")
+	}
+}
+
+func TestInitPubIsX25519(t *testing.T) {
+	// Verify that InitPub is a real X25519 public key, not SHA-256(InitPriv)
+	keys, _ := GenerateMLSKeys()
+
+	// If InitPub were SHA-256(InitPriv), this would match
+	import_sha256 := func(data []byte) []byte {
+		h := sha256.Sum256(data)
+		return h[:]
+	}
+	sha256Pub := import_sha256(keys.InitPriv)
+
+	if bytes.Equal(keys.InitPub, sha256Pub) {
+		t.Fatal("InitPub should be X25519(InitPriv, basepoint), not SHA-256(InitPriv)")
+	}
+
+	// InitPub should be 32 bytes
+	if len(keys.InitPub) != 32 {
+		t.Errorf("InitPub length = %d, want 32", len(keys.InitPub))
 	}
 }
