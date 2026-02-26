@@ -117,9 +117,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Save group state (committed)
-	groupBytes, _ := mlsgitGroup.ToBytes()
-	if err := storage.WriteGroupState(paths, groupBytes); err != nil {
+	// Save group state (committed — excludes epoch_secret for security)
+	committedBytes, _ := mlsgitGroup.ToCommittedBytes()
+	if err := storage.WriteGroupState(paths, committedBytes); err != nil {
 		return err
 	}
 

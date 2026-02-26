@@ -122,11 +122,11 @@ func saveGroupAndArchive(paths storage.MLSGitPaths, group *mls.MLSGitGroup, arch
 		return err
 	}
 
-	groupBytes, err := group.ToBytes()
+	committedBytes, err := group.ToCommittedBytes()
 	if err != nil {
 		return err
 	}
-	if err := storage.WriteGroupState(paths, groupBytes); err != nil {
+	if err := storage.WriteGroupState(paths, committedBytes); err != nil {
 		return err
 	}
 	return saveMLSState(paths, group)

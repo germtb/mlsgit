@@ -80,6 +80,14 @@ type memberEntry struct {
 	Active  bool   `json:"active"`
 }
 
+// committedGroupState is the subset of group state that is safe to commit
+// to git. It deliberately excludes EpochSecret and OwnLeafIndex.
+type committedGroupState struct {
+	GroupID []byte        `json:"group_id"`
+	Epoch   uint64        `json:"epoch"`
+	Members []memberEntry `json:"members"`
+}
+
 // WelcomeData holds the data sent to a new member joining the group.
 type WelcomeData struct {
 	GroupID     []byte        `json:"group_id"`
@@ -149,9 +157,20 @@ func FromBytes(data []byte, sigPriv ed25519.PrivateKey) (*MLSGitGroup, error) {
 	return &MLSGitGroup{state: s, sigKey: sigPriv}, nil
 }
 
-// ToBytes serializes group state.
+// ToBytes serializes group state (including epoch secret, for local storage only).
 func (g *MLSGitGroup) ToBytes() ([]byte, error) {
 	return json.Marshal(g.state)
+}
+
+// ToCommittedBytes serializes the group state for committing to git.
+// The output deliberately excludes EpochSecret and OwnLeafIndex so that
+// anyone with repo read access cannot derive file encryption keys.
+func (g *MLSGitGroup) ToCommittedBytes() ([]byte, error) {
+	return json.Marshal(committedGroupState{
+		GroupID: g.state.GroupID,
+		Epoch:   g.state.Epoch,
+		Members: g.state.Members,
+	})
 }
 
 // Epoch returns the current epoch number.
@@ -235,8 +254,8 @@ func (g *MLSGitGroup) AddMember(kp KeyPackageData) ([]byte, []byte, error) {
 		return nil, nil, fmt.Errorf("marshal welcome: %w", err)
 	}
 
-	// Commit is the serialized new state (for other existing members)
-	commitBytes, err := json.Marshal(g.state)
+	// Commit is the committed state (without epoch secret, for other existing members)
+	commitBytes, err := g.ToCommittedBytes()
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal commit: %w", err)
 	}
@@ -257,7 +276,7 @@ func (g *MLSGitGroup) RemoveMember(leafIndex int) ([]byte, error) {
 	g.state.Members[leafIndex].Active = false
 	g.advanceEpoch()
 
-	commitBytes, err := json.Marshal(g.state)
+	commitBytes, err := g.ToCommittedBytes()
 	if err != nil {
 		return nil, fmt.Errorf("marshal commit: %w", err)
 	}
@@ -265,20 +284,32 @@ func (g *MLSGitGroup) RemoveMember(leafIndex int) ([]byte, error) {
 }
 
 // ApplyCommit applies a commit received from another member.
+// The commit uses the committed format (no epoch_secret), so we
+// ratchet the local epoch secret forward to reach the committed epoch.
 func (g *MLSGitGroup) ApplyCommit(commitBytes []byte) error {
-	var newState groupState
-	if err := json.Unmarshal(commitBytes, &newState); err != nil {
+	var committed committedGroupState
+	if err := json.Unmarshal(commitBytes, &committed); err != nil {
 		return fmt.Errorf("unmarshal commit: %w", err)
 	}
-	g.state = newState
+	if committed.Epoch <= g.state.Epoch {
+		return nil // already up to date
+	}
+	// Ratchet forward from current epoch to committed epoch
+	for g.state.Epoch < committed.Epoch {
+		g.advanceEpoch()
+	}
+	g.state.GroupID = committed.GroupID
+	g.state.Members = committed.Members
 	return nil
 }
 
 // SyncFromCommitted updates the group state from the committed state bytes
-// (e.g., after pulling changes from remote). This preserves the local
-// OwnLeafIndex and signing key. Returns true if the state was updated.
+// (e.g., after pulling changes from remote). The committed state does not
+// contain the epoch secret, so we ratchet the local secret forward using
+// advanceEpoch(). Preserves OwnLeafIndex and signing key. Returns true if
+// the state was updated.
 func (g *MLSGitGroup) SyncFromCommitted(committedBytes []byte) bool {
-	var committed groupState
+	var committed committedGroupState
 	if err := json.Unmarshal(committedBytes, &committed); err != nil {
 		return false
 	}
@@ -290,7 +321,12 @@ func (g *MLSGitGroup) SyncFromCommitted(committedBytes []byte) bool {
 	if ownLeaf >= len(committed.Members) || !committed.Members[ownLeaf].Active {
 		return false
 	}
-	g.state = committed
+	// Ratchet local epoch secret forward to reach the committed epoch
+	for g.state.Epoch < committed.Epoch {
+		g.advanceEpoch()
+	}
+	g.state.GroupID = committed.GroupID
+	g.state.Members = committed.Members
 	g.state.OwnLeafIndex = ownLeaf
 	return true
 }
