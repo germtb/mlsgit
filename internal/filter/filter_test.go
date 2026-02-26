@@ -21,10 +21,6 @@ func setupFilterTest(t *testing.T) (storage.MLSGitPaths, *mls.MLSGitGroup, *mls.
 	paths := storage.MLSGitPaths{Root: tmp}
 	paths.EnsureDirs()
 
-	// Set passphrase env to empty for testing
-	os.Setenv(crypto.PassphraseEnv, "")
-	t.Cleanup(func() { os.Unsetenv(crypto.PassphraseEnv) })
-
 	// Generate keys
 	signingPriv, signingPub, _ := crypto.GenerateKeypair()
 	pubPEM, _ := crypto.PublicKeyToPEM(signingPub)
@@ -39,7 +35,7 @@ func setupFilterTest(t *testing.T) (storage.MLSGitPaths, *mls.MLSGitGroup, *mls.
 	storage.WriteIdentity(paths, memberID, "tester")
 
 	// Write private key (unencrypted)
-	privPEM, _ := crypto.PrivateKeyToPEM(signingPriv, nil)
+	privPEM, _ := crypto.PrivateKeyToPEM(signingPriv)
 	os.WriteFile(paths.PrivateKey(), []byte(privPEM), 0o644)
 
 	// Save MLS state

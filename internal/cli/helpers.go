@@ -22,32 +22,6 @@ func generateMemberID(name string) string {
 	return fmt.Sprintf("%x", h)[:12]
 }
 
-func promptPassphrase(confirm bool) ([]byte, error) {
-	env := os.Getenv(crypto.PassphraseEnv)
-	if env != "" {
-		return []byte(env), nil
-	}
-	// If env var is set but empty, means no passphrase
-	if _, ok := os.LookupEnv(crypto.PassphraseEnv); ok {
-		return nil, nil
-	}
-
-	fmt.Print("Key passphrase (empty for no encryption): ")
-	var pw string
-	fmt.Scanln(&pw)
-	if pw == "" {
-		return nil, nil
-	}
-	if confirm {
-		fmt.Print("Confirm passphrase: ")
-		var pw2 string
-		fmt.Scanln(&pw2)
-		if pw != pw2 {
-			return nil, fmt.Errorf("passphrases do not match")
-		}
-	}
-	return []byte(pw), nil
-}
 
 func saveMLSState(paths storage.MLSGitPaths, group *mls.MLSGitGroup) error {
 	groupBytes, err := group.ToBytes()

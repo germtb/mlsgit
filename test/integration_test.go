@@ -78,7 +78,6 @@ func makeEnv(t *testing.T) []string {
 		"GIT_AUTHOR_EMAIL=t@t",
 		"GIT_COMMITTER_NAME=Test",
 		"GIT_COMMITTER_EMAIL=t@t",
-		"MLSGIT_PASSPHRASE=",
 		"HOME=" + tmpHome,
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_SYSTEM=/dev/null",

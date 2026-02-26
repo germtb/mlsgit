@@ -62,15 +62,11 @@ func runJoin(cmd *cobra.Command, args []string) error {
 	}
 
 	// 1. Generate Ed25519 key pair
-	passphrase, err := promptPassphrase(true)
-	if err != nil {
-		return err
-	}
 	signingPriv, signingPub, err := crypto.GenerateKeypair()
 	if err != nil {
 		return err
 	}
-	privPEM, err := crypto.PrivateKeyToPEM(signingPriv, passphrase)
+	privPEM, err := crypto.PrivateKeyToPEM(signingPriv)
 	if err != nil {
 		return err
 	}

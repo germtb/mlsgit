@@ -42,7 +42,7 @@ func LoadState(paths storage.MLSGitPaths) (*FilterState, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read private key: %w", err)
 	}
-	signingPriv, err := crypto.LoadPrivateKey(string(pemData), nil)
+	signingPriv, err := crypto.LoadPrivateKey(string(pemData))
 	if err != nil {
 		return nil, fmt.Errorf("load private key: %w", err)
 	}

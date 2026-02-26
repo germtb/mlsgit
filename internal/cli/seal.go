@@ -38,7 +38,7 @@ func runSeal(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	signingPriv, err := crypto.LoadPrivateKey(string(pemData), nil)
+	signingPriv, err := crypto.LoadPrivateKey(string(pemData))
 	if err != nil {
 		return err
 	}

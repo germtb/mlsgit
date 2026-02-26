@@ -39,5 +39,9 @@ __pycache__/
 web/node_modules/
 web/dist/
 
+# Test repositories
+encrypted-repository/
+encrypted-repository-2/
+
 # Claude
 .claude/

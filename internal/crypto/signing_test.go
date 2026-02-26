@@ -1,7 +1,6 @@
 package crypto
 
 import (
-	"os"
 	"testing"
 )
 
@@ -24,68 +23,16 @@ func TestPrivateKeyPEMRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pem, err := PrivateKeyToPEM(priv, nil)
+	pem, err := PrivateKeyToPEM(priv)
 	if err != nil {
 		t.Fatalf("PrivateKeyToPEM error: %v", err)
 	}
 
-	loaded, err := LoadPrivateKey(pem, nil)
+	loaded, err := LoadPrivateKey(pem)
 	if err != nil {
 		t.Fatalf("LoadPrivateKey error: %v", err)
 	}
 
-	if !priv.Equal(loaded) {
-		t.Error("loaded key does not match original")
-	}
-}
-
-func TestPrivateKeyPEMWithPassphrase(t *testing.T) {
-	priv, _, err := GenerateKeypair()
-	if err != nil {
-		t.Fatal(err)
-	}
-	passphrase := []byte("test-passphrase")
-
-	pem, err := PrivateKeyToPEM(priv, passphrase)
-	if err != nil {
-		t.Fatalf("PrivateKeyToPEM with passphrase error: %v", err)
-	}
-
-	// Should fail without passphrase
-	_, err = LoadPrivateKey(pem, nil)
-	if err == nil {
-		t.Fatal("expected error loading encrypted key without passphrase")
-	}
-
-	// Should succeed with passphrase
-	loaded, err := LoadPrivateKey(pem, passphrase)
-	if err != nil {
-		t.Fatalf("LoadPrivateKey with passphrase error: %v", err)
-	}
-	if !priv.Equal(loaded) {
-		t.Error("loaded key does not match original")
-	}
-}
-
-func TestPrivateKeyPEMFromEnv(t *testing.T) {
-	priv, _, err := GenerateKeypair()
-	if err != nil {
-		t.Fatal(err)
-	}
-	passphrase := []byte("env-test")
-
-	pem, err := PrivateKeyToPEM(priv, passphrase)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	os.Setenv(PassphraseEnv, "env-test")
-	defer os.Unsetenv(PassphraseEnv)
-
-	loaded, err := LoadPrivateKey(pem, nil)
-	if err != nil {
-		t.Fatalf("LoadPrivateKey from env error: %v", err)
-	}
 	if !priv.Equal(loaded) {
 		t.Error("loaded key does not match original")
 	}

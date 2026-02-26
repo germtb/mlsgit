@@ -6,7 +6,6 @@ require (
 	github.com/BurntSushi/toml v1.4.0
 	github.com/sergi/go-diff v1.4.0
 	github.com/spf13/cobra v1.8.1
-	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78
 	golang.org/x/crypto v0.31.0
 )
 
