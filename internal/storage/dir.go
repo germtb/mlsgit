@@ -178,7 +178,7 @@ func ReadGroupState(paths MLSGitPaths) ([]byte, error) {
 
 // WriteLocalMLSState writes local MLS ratchet state to .git/mlsgit/mls_state.bin.
 func WriteLocalMLSState(paths MLSGitPaths, stateBytes []byte) error {
-	return os.WriteFile(paths.MLSState(), stateBytes, 0o644)
+	return os.WriteFile(paths.MLSState(), stateBytes, 0o600)
 }
 
 // ReadLocalMLSState reads local MLS ratchet state from .git/mlsgit/mls_state.bin.

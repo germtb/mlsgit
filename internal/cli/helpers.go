@@ -201,6 +201,35 @@ func resolveFilterBinary() string {
 	return "mlsgit"
 }
 
+// getCurrentBranch returns the current git branch name.
+func getCurrentBranch(root string) string {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// getMainBranch returns "main" or "master", whichever exists.
+func getMainBranch(root string) string {
+	// Check for "main" branch
+	cmd := exec.Command("git", "rev-parse", "--verify", "main")
+	cmd.Dir = root
+	if err := cmd.Run(); err == nil {
+		return "main"
+	}
+	// Fallback to "master"
+	cmd = exec.Command("git", "rev-parse", "--verify", "master")
+	cmd.Dir = root
+	if err := cmd.Run(); err == nil {
+		return "master"
+	}
+	// Default
+	return "main"
+}
+
 func getRootAndPaths() (string, storage.MLSGitPaths, error) {
 	root, err := config.FindGitRoot("")
 	if err != nil {

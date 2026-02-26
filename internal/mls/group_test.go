@@ -483,20 +483,36 @@ func TestUpdateEncapsPropagateViaWelcome(t *testing.T) {
 	// Add Charlie (Welcome should include the encap from the removal)
 	charlieKeys, _ := GenerateMLSKeys()
 	ckp := BuildKeyPackage([]byte("charlie"), charlieKeys)
-	_, welcomeBytes, _ := alice.AddMember(ckp) // epoch 3
+	_, encryptedWelcome, _ := alice.AddMember(ckp) // epoch 3
 
-	// Parse Welcome and verify encaps are present
-	var w WelcomeData
-	json.Unmarshal(welcomeBytes, &w)
-	if len(w.UpdateEncaps) == 0 {
-		t.Error("Welcome should include UpdateEncaps from prior removal")
+	// Welcome is encrypted, so we decrypt it to verify encaps are present
+	charlie, err := JoinFromWelcome(encryptedWelcome, charlieKeys)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	charlie, _ := JoinFromWelcome(welcomeBytes, charlieKeys)
 
 	// Verify Charlie got the encaps
 	if len(charlie.state.UpdateEncaps) == 0 {
 		t.Error("Charlie should have encaps from Welcome")
+	}
+}
+
+func TestWelcomeIsEncrypted(t *testing.T) {
+	aliceKeys, _ := GenerateMLSKeys()
+	g, _ := Create([]byte("test-group"), []byte("alice"), aliceKeys)
+
+	bobKeys, _ := GenerateMLSKeys()
+	kp := BuildKeyPackage([]byte("bob"), bobKeys)
+
+	_, welcomeBytes, err := g.AddMember(kp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The returned bytes should NOT be parseable as plaintext JSON
+	var w WelcomeData
+	if json.Unmarshal(welcomeBytes, &w) == nil {
+		t.Error("welcome should be encrypted, not plaintext JSON")
 	}
 }
 

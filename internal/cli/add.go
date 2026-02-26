@@ -77,7 +77,8 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("MLS epoch advanced: %d -> %d\n", oldEpoch, newEpoch)
 
-	// 5. Write Welcome message
+	// 5. Write Welcome message (ensure welcome dir exists)
+	os.MkdirAll(paths.WelcomeDir(), 0o755)
 	if err := storage.WriteWelcome(paths, memberID, welcomeBytes); err != nil {
 		return err
 	}

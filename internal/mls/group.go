@@ -153,8 +153,14 @@ func Create(groupID, identity []byte, keys MLSKeys) (*MLSGitGroup, error) {
 	return g, nil
 }
 
-// JoinFromWelcome joins an existing group from a Welcome message.
-func JoinFromWelcome(welcomeBytes []byte, keys MLSKeys) (*MLSGitGroup, error) {
+// JoinFromWelcome joins an existing group from an encrypted Welcome message.
+func JoinFromWelcome(encryptedWelcome []byte, keys MLSKeys) (*MLSGitGroup, error) {
+	// Decrypt the Welcome using our InitPriv
+	welcomeBytes, err := mlscrypto.DecryptWelcome(keys.InitPriv, encryptedWelcome)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt welcome: %w", err)
+	}
+
 	var w WelcomeData
 	if err := json.Unmarshal(welcomeBytes, &w); err != nil {
 		return nil, fmt.Errorf("unmarshal welcome: %w", err)
@@ -200,6 +206,26 @@ func (g *MLSGitGroup) ToCommittedBytes() ([]byte, error) {
 		Members:      g.state.Members,
 		UpdateEncaps: g.state.UpdateEncaps,
 	})
+}
+
+// FindLeafIndex returns the leaf index for a member identified by their InitPub.
+// Returns -1 if not found.
+func (g *MLSGitGroup) FindLeafIndex(initPub []byte) int {
+	for i, m := range g.state.Members {
+		if m.Active && len(m.InitPub) == len(initPub) {
+			match := true
+			for j := range m.InitPub {
+				if m.InitPub[j] != initPub[j] {
+					match = false
+					break
+				}
+			}
+			if match {
+				return i
+			}
+		}
+	}
+	return -1
 }
 
 // Epoch returns the current epoch number.
@@ -415,13 +441,19 @@ func (g *MLSGitGroup) AddMember(kp KeyPackageData) ([]byte, []byte, error) {
 		return nil, nil, fmt.Errorf("marshal welcome: %w", err)
 	}
 
+	// Encrypt the Welcome under the new member's InitPub
+	encryptedWelcome, err := mlscrypto.EncryptWelcome(kp.InitPub, welcomeBytes)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encrypt welcome: %w", err)
+	}
+
 	// Commit is the committed state (without epoch secret, for other existing members)
 	commitBytes, err := g.ToCommittedBytes()
 	if err != nil {
 		return nil, nil, fmt.Errorf("marshal commit: %w", err)
 	}
 
-	return commitBytes, welcomeBytes, nil
+	return commitBytes, encryptedWelcome, nil
 }
 
 // RemoveMember removes a member by leaf index. Returns commitBytes.

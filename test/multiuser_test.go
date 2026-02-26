@@ -56,12 +56,16 @@ func getMemberID(t *testing.T, repo string) string {
 	return id
 }
 
-// setupTwoUsers creates a full two-user setup:
+// setupTwoUsers creates a full two-user setup with branch-based welcome flow:
 //  1. Creates a bare repo (remote)
 //  2. Alice: git init + mlsgit init + creates aliceFiles + pushes
-//  3. Bob: clones, runs mlsgit join, pushes pending request
-//  4. Alice: pulls, runs mlsgit add, pushes
-//  5. Bob: pulls, runs mlsgit join (processes welcome, decrypts files)
+//  3. Bob: clones, runs mlsgit join (auto-creates welcome/<bobID> branch)
+//  4. Bob: commits pending request + pushes welcome branch
+//  5. Alice: fetches, checks out welcome branch, runs mlsgit add, pushes
+//  6. Alice: switches back to master
+//  7. Bob: pulls welcome branch, runs mlsgit join (decrypts, deletes, merges to master)
+//  8. Bob: pushes master
+//  9. Alice: pulls master
 //
 // Returns (bare, aliceRepo, bobRepo, aliceID, bobID).
 func setupTwoUsers(t *testing.T, aliceFiles map[string]string) (bare, aliceRepo, bobRepo, aliceID, bobID string) {
@@ -99,23 +103,38 @@ func setupTwoUsers(t *testing.T, aliceFiles map[string]string) (bare, aliceRepo,
 	git(t, bobRepo, "config", "user.name", "Bob")
 	git(t, bobRepo, "config", "pull.rebase", "false")
 
-	// Bob: mlsgit join (creates pending request + installs filter)
+	// Bob: mlsgit join (creates pending request + welcome/<bobID> branch)
 	mlsgitCmd(t, bobRepo, "join", "--name", "bob")
+	bobID = getMemberID(t, bobRepo)
+	welcomeBranch := "welcome/" + bobID
+
+	// Bob: commit and push on welcome branch
 	git(t, bobRepo, "add", ".mlsgit/pending/")
 	git(t, bobRepo, "commit", "-m", "request to join: bob")
-	git(t, bobRepo, "push")
+	git(t, bobRepo, "push", "-u", "origin", welcomeBranch)
 
-	// Alice: pull + approve Bob
-	git(t, aliceRepo, "pull", "--no-edit")
-	bobID = getMemberID(t, bobRepo)
+	// Alice: fetch and checkout welcome branch
+	git(t, aliceRepo, "fetch", "origin")
+	git(t, aliceRepo, "checkout", "-b", welcomeBranch, "origin/"+welcomeBranch)
+
+	// Alice: approve Bob on the welcome branch
 	mlsgitCmd(t, aliceRepo, "add", bobID)
 	git(t, aliceRepo, "add", ".")
 	git(t, aliceRepo, "commit", "-m", "add bob")
 	git(t, aliceRepo, "push")
 
-	// Bob: pull + process welcome (decrypts working tree)
+	// Alice: switch back to master
+	git(t, aliceRepo, "checkout", "master")
+
+	// Bob: pull on welcome branch, then process welcome (decrypts, deletes, merges to master)
 	git(t, bobRepo, "pull", "--no-edit")
 	mlsgitCmd(t, bobRepo, "join")
+
+	// Bob: push master (which now has the merged welcome)
+	git(t, bobRepo, "push", "origin", "master")
+
+	// Alice: pull master to sync
+	git(t, aliceRepo, "pull", "--no-edit")
 
 	aliceID = getMemberID(t, aliceRepo)
 	return
@@ -194,23 +213,35 @@ func TestThreeUserWorkflow(t *testing.T) {
 	git(t, charlieRepo, "config", "user.name", "Charlie")
 	git(t, charlieRepo, "config", "pull.rebase", "false")
 
-	// Charlie joins
+	// Charlie joins (creates welcome/<charlieID> branch)
 	mlsgitCmd(t, charlieRepo, "join", "--name", "charlie")
+	charlieID := getMemberID(t, charlieRepo)
+	charlieWelcomeBranch := "welcome/" + charlieID
+
+	// Charlie: commit and push on welcome branch
 	git(t, charlieRepo, "add", ".mlsgit/pending/")
 	git(t, charlieRepo, "commit", "-m", "request to join: charlie")
-	git(t, charlieRepo, "push")
+	git(t, charlieRepo, "push", "-u", "origin", charlieWelcomeBranch)
 
-	// Alice pulls and adds Charlie
-	git(t, aliceRepo, "pull", "--no-edit")
-	charlieID := getMemberID(t, charlieRepo)
+	// Alice: fetch and checkout Charlie's welcome branch
+	git(t, aliceRepo, "fetch", "origin")
+	git(t, aliceRepo, "checkout", "-b", charlieWelcomeBranch, "origin/"+charlieWelcomeBranch)
+
+	// Alice: approve Charlie on the welcome branch
 	mlsgitCmd(t, aliceRepo, "add", charlieID)
 	git(t, aliceRepo, "add", ".")
 	git(t, aliceRepo, "commit", "-m", "add charlie")
 	git(t, aliceRepo, "push")
 
-	// Charlie pulls and processes welcome
+	// Alice: switch back to master
+	git(t, aliceRepo, "checkout", "master")
+
+	// Charlie: pull on welcome branch, process welcome (decrypts, deletes, merges to master)
 	git(t, charlieRepo, "pull", "--no-edit")
 	mlsgitCmd(t, charlieRepo, "join")
+
+	// Charlie: push master
+	git(t, charlieRepo, "push", "origin", "master")
 
 	// Charlie should be able to read the shared file (encrypted at epoch 0)
 	got := readFile(t, charlieRepo, "shared.txt")
@@ -218,7 +249,8 @@ func TestThreeUserWorkflow(t *testing.T) {
 		t.Errorf("charlie reads shared.txt: %q, want %q", got, "shared content\n")
 	}
 
-	// Bob pulls to sync with the latest state (epoch 2)
+	// Alice and Bob pull to sync with the latest state
+	git(t, aliceRepo, "pull", "--no-edit")
 	git(t, bobRepo, "pull", "--no-edit")
 
 	// Bob should still be able to read the shared file
@@ -319,18 +351,23 @@ func TestMultiUserReview(t *testing.T) {
 	git(t, aliceRepo, "remote", "add", "origin", bare)
 	git(t, aliceRepo, "push", "-u", "origin", "master")
 
-	// Bob: clone and join
+	// Bob: clone and join (creates welcome branch)
 	bobRepo := filepath.Join(t.TempDir(), "bob")
 	gitClone(t, bare, bobRepo)
 	git(t, bobRepo, "config", "user.email", "bob@test.com")
 	git(t, bobRepo, "config", "user.name", "Bob")
 	mlsgitCmd(t, bobRepo, "join", "--name", "bob")
+	bobID := getMemberID(t, bobRepo)
+	welcomeBranch := "welcome/" + bobID
+
+	// Bob: commit and push on welcome branch
 	git(t, bobRepo, "add", ".mlsgit/pending/")
 	git(t, bobRepo, "commit", "-m", "request to join: bob")
-	git(t, bobRepo, "push")
+	git(t, bobRepo, "push", "-u", "origin", welcomeBranch)
 
-	// Alice: pull and review
-	git(t, aliceRepo, "pull", "--no-edit")
+	// Alice: fetch and checkout welcome branch, then review
+	git(t, aliceRepo, "fetch", "origin")
+	git(t, aliceRepo, "checkout", "-b", welcomeBranch, "origin/"+welcomeBranch)
 	out := mlsgitCmd(t, aliceRepo, "review")
 	if !strings.Contains(out, "bob") {
 		t.Errorf("review should show bob's pending request:\n%s", out)

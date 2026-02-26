@@ -103,13 +103,22 @@ func runJoin(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// 4. Create welcome branch
+	branchName := "welcome/" + memberID
+	branchCmd := exec.Command("git", "checkout", "-b", branchName)
+	branchCmd.Dir = root
+	if out, err := branchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("create welcome branch: %w\n%s", err, out)
+	}
+
 	fp, _ := crypto.PublicKeyFingerprint(signingPub)
 	fmt.Printf("Join request created for '%s' (member ID: %s)\n", joinName, memberID)
 	fmt.Printf("Public key fingerprint: %s\n", fp)
+	fmt.Printf("Branch: %s\n", branchName)
 	fmt.Println()
 	fmt.Println("Next steps:")
 	fmt.Printf("  git add .mlsgit/pending/ && git commit -m 'request to join: %s'\n", joinName)
-	fmt.Println("  Then open a PR for review.")
+	fmt.Printf("  git push -u origin %s\n", branchName)
 	fmt.Println()
 	fmt.Println("After your request is approved and you pull, run 'mlsgit join' again.")
 
@@ -181,6 +190,60 @@ func processWelcome(paths storage.MLSGitPaths, root string) error {
 	fmt.Println("Successfully joined the group!")
 	fmt.Printf("Epoch: %d\n", mlsgitGroup.Epoch())
 	fmt.Printf("Members: %d\n", mlsgitGroup.MemberCount())
+
+	// Delete the Welcome file (it contains the encrypted epoch secret)
+	os.Remove(welcomePath)
+	os.Remove(paths.WelcomeDir()) // remove empty welcome dir
+
+	// Determine the main branch for merge
+	mainBranch := getMainBranch(root)
+	currentBranch := getCurrentBranch(root)
+	welcomeBranch := "welcome/" + memberID
+
+	// If we're on the welcome branch, merge to main
+	if currentBranch == welcomeBranch {
+		// Stage and commit the Welcome deletion on the welcome branch
+		stageCmd := exec.Command("git", "add", "-A")
+		stageCmd.Dir = root
+		stageCmd.CombinedOutput()
+
+		commitCmd := exec.Command("git", "commit", "-m", "process welcome: "+memberID)
+		commitCmd.Dir = root
+		commitCmd.CombinedOutput()
+
+		// Merge main into the welcome branch (usually a no-op since welcome is based on main)
+		mergeCmd := exec.Command("git", "merge", "--no-edit", mainBranch)
+		mergeCmd.Dir = root
+		mergeCmd.CombinedOutput()
+
+		// Belt-and-suspenders: ensure welcome file is not in the index
+		rmCmd := exec.Command("git", "rm", "--cached", "--ignore-unmatch", paths.WelcomeFile(memberID))
+		rmCmd.Dir = root
+		rmCmd.CombinedOutput()
+
+		// If there are staged changes after rm, commit them
+		commitRmCmd := exec.Command("git", "diff", "--cached", "--quiet")
+		commitRmCmd.Dir = root
+		if err := commitRmCmd.Run(); err != nil {
+			amendCmd := exec.Command("git", "commit", "-m", "add member: "+memberID)
+			amendCmd.Dir = root
+			amendCmd.CombinedOutput()
+		}
+
+		// Move main branch to current commit without checkout (avoids smudge filter)
+		branchCmd := exec.Command("git", "branch", "-f", mainBranch, "HEAD")
+		branchCmd.Dir = root
+		if out, err := branchCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("move %s to HEAD: %w\n%s", mainBranch, err, out)
+		}
+
+		// Switch to main (same commit, so no files change, no smudge filter runs)
+		checkoutCmd := exec.Command("git", "checkout", mainBranch)
+		checkoutCmd.Dir = root
+		if out, err := checkoutCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("checkout %s: %w\n%s", mainBranch, err, out)
+		}
+	}
 
 	// Force re-checkout to decrypt all files
 	fmt.Println("Decrypting working tree...")

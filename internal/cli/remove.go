@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
+	"github.com/germtb/mlsgit/internal/crypto"
+	"github.com/germtb/mlsgit/internal/mls"
 	"github.com/germtb/mlsgit/internal/storage"
 	"github.com/spf13/cobra"
 )
@@ -48,17 +51,22 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot remove yourself")
 	}
 
-	// 3. Find the member's leaf index
-	memberIDs, _ := storage.ListMemberIDs(paths)
-	leafIndex := -1
-	for i, mid := range memberIDs {
-		if mid == memberID {
-			leafIndex = i
-			break
-		}
+	// 3. Find the member's leaf index via their KeyPackage InitPub
+	kpB64, err := os.ReadFile(paths.MemberKeypackage(memberID))
+	if err != nil {
+		return fmt.Errorf("read keypackage for '%s': %w", memberID, err)
 	}
+	kpBytes, err := crypto.B64Decode(string(kpB64), false)
+	if err != nil {
+		return fmt.Errorf("decode keypackage: %w", err)
+	}
+	var kp mls.KeyPackageData
+	if err := json.Unmarshal(kpBytes, &kp); err != nil {
+		return fmt.Errorf("unmarshal keypackage: %w", err)
+	}
+	leafIndex := mlsgitGroup.FindLeafIndex(kp.InitPub)
 	if leafIndex < 0 {
-		return fmt.Errorf("member '%s' not found in members list", memberID)
+		return fmt.Errorf("member '%s' not found in MLS group state", memberID)
 	}
 
 	oldEpoch := mlsgitGroup.Epoch()
